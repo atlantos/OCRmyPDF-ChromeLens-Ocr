@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ocrmypdf-chromelens-ocr"
+version = "1.0.0"
+description = "OCRmyPDF plugin using Google Lens API for OCR"
+readme = "README.md"
+authors = [
+  { name = "Victor Sakovich", email = "atlantos@gmail.com" },
+]
+license = { file = "LICENSE" }
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Image Recognition",
+    "Topic :: Text Processing :: Indexing",
+]
+keywords = ["ocrmypdf", "ocr", "google-lens", "pdf", "plugin"]
+requires-python = ">=3.9"
+dependencies = [
+    "ocrmypdf>=16.0.0",
+    "requests",
+    "Pillow",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/atlantos/OCRmyPDF-ChromeLens-Ocr"
+"Bug Tracker" = "https://github.com/atlantos/OCRmyPDF-ChromeLens-Ocr/issues"
+
+[project.entry-points."ocrmypdf.plugins"]
+chromelens = "ocrmypdf_chromelens_ocr"
