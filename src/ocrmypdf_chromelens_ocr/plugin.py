@@ -192,7 +192,7 @@ class ChromeLensEngine(OcrEngine):
         try:
             with Image.open(input_file) as img:
                 width, height = img.size
-                MAX_DIMENSION = 2400
+                MAX_DIMENSION = 4800
                 process_img = img
 
                 # Pillow's .convert('RGB') turns transparent pixels BLACK.
