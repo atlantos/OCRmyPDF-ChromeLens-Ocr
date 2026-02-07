@@ -7,6 +7,7 @@ import string
 import struct
 import time
 import uuid
+import unicodedata
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
@@ -20,6 +21,20 @@ class OcrEngineError(Exception):
     pass
 
 logger = logging.getLogger(__name__)
+
+# --- MONKEY PATCH: Disable NFKC Normalization ---
+# ocrmypdf uses NFKC normalization which converts ¹ -> 1, ² -> 2, etc.
+# We patch it to use NFC (Canonical) which preserves these glyphs.
+_original_normalize = unicodedata.normalize
+
+def _patched_normalize(form, unistr):
+    if form == 'NFKC':
+        # Fallback to NFC to preserve visual fidelity (superscripts, fractions)
+        return _original_normalize('NFC', unistr)
+    return _original_normalize(form, unistr)
+
+# Apply patch globally
+unicodedata.normalize = _patched_normalize
 
 # --- Constants ---
 LENS_PROTO_ENDPOINT = 'https://lensfrontend-pa.googleapis.com/v1/crupload'
@@ -415,6 +430,9 @@ class ChromeLensEngine(OcrEngine):
         layout = MiniProto(text_proto[1][0]).parse()
         if 1 not in layout: return []
         
+        # Superscript set for splitting logic
+        superscripts = set("⁰¹²³⁴⁵⁶⁷⁸⁹")
+
         for para_bytes in layout[1]:
             para = MiniProto(para_bytes).parse()
             para_struct = {'lines': [], 'bbox': None, 'rotation': 0.0}
@@ -458,7 +476,45 @@ class ChromeLensEngine(OcrEngine):
                         else:
                             word_bbox = [0, 0, 1, 1]
 
-                    line_struct['words'].append({'text': text_val, 'bbox': word_bbox})
+                    # 1. Find the split index (start of the superscript suffix)
+                    split_idx = len(text_val)
+                    while split_idx > 0 and text_val[split_idx-1] in superscripts:
+                        split_idx -= 1
+                    
+                    # 2. Only split if we found superscripts AND there is a base word preceding them
+                    if split_idx < len(text_val) and split_idx > 0:
+                        base_text = text_val[:split_idx]
+                        suffix_text = text_val[split_idx:]
+                        
+                        x0, y0, x1, y1 = word_bbox
+                        total_w = x1 - x0
+                        full_len = len(text_val)
+                        suffix_len = len(suffix_text)
+                        
+                        # Calculate width of the suffix based on character count ratio
+                        # We cap the suffix width at 40% of the word to prevent layout issues
+                        ratio = suffix_len / full_len
+                        split_w = int(total_w * ratio)
+                        
+                        # Safety cap
+                        if split_w > (total_w * 0.4):
+                            split_w = int(total_w * 0.4)
+                            
+                        # Ensure at least 1 pixel width
+                        split_w = max(1, split_w)
+                        
+                        split_x = x1 - split_w
+                        
+                        # Add Base
+                        bbox_base = [x0, y0, split_x, y1]
+                        line_struct['words'].append({'text': base_text, 'bbox': bbox_base})
+                        
+                        # Add Suffix (The superscript part)
+                        bbox_suff = [split_x, y0, x1, y1]
+                        line_struct['words'].append({'text': suffix_text, 'bbox': bbox_suff})
+                    else:
+                        # No superscript suffix found, or the whole word is superscripts (leave as is)
+                        line_struct['words'].append({'text': text_val, 'bbox': word_bbox})
                 
                 if not line_struct['bbox'] and line_struct['words']:
                     line_struct['bbox'] = union_bboxes([w['bbox'] for w in line_struct['words']])
@@ -472,7 +528,7 @@ class ChromeLensEngine(OcrEngine):
         return paragraphs
 
     def _write_output_hierarchical(self, paragraphs, img_w, img_h, input_file, output_hocr, output_text):
-        html = ET.Element("html", {"xmlns": "http://www.w3.org/1999/xhtml", "xml:lang": "en"})
+        html = ET.Element("html", {"xmlns": "http://www.w3.org/1999/xhtml", "xml:lang": "und"})
         head = ET.SubElement(html, "head")
         safe_title = xml_sanitize(str(input_file))
         ET.SubElement(head, "title").text = safe_title
