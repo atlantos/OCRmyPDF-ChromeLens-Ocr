@@ -12,6 +12,7 @@ from xml.etree import ElementTree as ET
 
 import requests
 from PIL import Image
+from packaging.version import InvalidVersion, Version
 
 # ocrmypdf imports
 import ocrmypdf
@@ -51,6 +52,17 @@ LENS_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/5
 def _next_request_uuid() -> int:
     # Lens request_id.uuid is uint64, so truncate UUIDv4 to 64 bits.
     return uuid.uuid4().int & ((1 << 64) - 1)
+
+
+def _is_ocrmypdf_v17_or_newer() -> bool:
+    raw_version = str(getattr(ocrmypdf, "__version__", "0"))
+    try:
+        return Version(raw_version) >= Version("17.0.0")
+    except InvalidVersion:
+        # Fallback for unconventional version strings.
+        parts = re.findall(r"\d+", raw_version)
+        major = int(parts[0]) if parts else 0
+        return major >= 17
 
 # --- Utilities ---
 def xml_sanitize(text):
@@ -207,6 +219,7 @@ class ChromeLensEngine(OcrEngine):
         img_bytes = None
         width, height = 0, 0
         dpi = (300, 300)
+        final_w, final_h = 0, 0
 
         try:
             with Image.open(input_file) as img:
@@ -242,7 +255,13 @@ class ChromeLensEngine(OcrEngine):
         try:
             proto_payload = self._create_lens_proto_request(img_bytes, final_w, final_h)
             response_data = self._send_proto_request(proto_payload)
-            layout_structure = self._strict_parse_hierarchical(response_data, width, height)
+            layout_structure = self._strict_parse_hierarchical(
+                response_data,
+                orig_w=width,
+                orig_h=height,
+                upload_w=final_w,
+                upload_h=final_h,
+            )
             
             # --- De-hyphenation Configuration ---
             no_dehyphen = getattr(options, 'chromelens_no_dehyphenation', False)
@@ -427,7 +446,7 @@ class ChromeLensEngine(OcrEngine):
         # If loop finishes without success
         raise last_exception or OcrEngineError("Unknown failure after retries")
 
-    def _parse_geometry(self, box_bytes, img_w, img_h):
+    def _parse_geometry(self, box_bytes, img_w, img_h, upload_w=None, upload_h=None):
         box = MiniProto(box_bytes).parse()
         cx = box.get(1, [0.5])[0]
         cy = box.get(2, [0.5])[0]
@@ -435,13 +454,19 @@ class ChromeLensEngine(OcrEngine):
         h  = box.get(4, [0.0])[0]
         rotation = box.get(5, [0.0])[0]
         coordinate_type = box.get(6, [1])[0]
+        upload_w = upload_w or img_w
+        upload_h = upload_h or img_h
+        scale_x = (img_w / upload_w) if upload_w else 1.0
+        scale_y = (img_h / upload_h) if upload_h else 1.0
 
         # Geometry may be normalized (0..1) or absolute image coordinates.
+        # Absolute IMAGE coords are relative to the uploaded image, which may
+        # have been downscaled before sending to Lens.
         if coordinate_type == 2:  # IMAGE
-            px_cx = cx
-            px_cy = cy
-            px_w = w
-            px_h = h
+            px_cx = cx * scale_x
+            px_cy = cy * scale_y
+            px_w = w * scale_x
+            px_h = h * scale_y
         elif coordinate_type == 1:  # NORMALIZED
             px_cx = cx * img_w
             px_cy = cy * img_h
@@ -461,10 +486,10 @@ class ChromeLensEngine(OcrEngine):
                 px_w = w * img_w
                 px_h = h * img_h
             else:
-                px_cx = cx
-                px_cy = cy
-                px_w = w
-                px_h = h
+                px_cx = cx * scale_x
+                px_cy = cy * scale_y
+                px_w = w * scale_x
+                px_h = h * scale_y
         
         if abs(rotation) > 0.1:
             cos_r = abs(math.cos(rotation))
@@ -485,7 +510,7 @@ class ChromeLensEngine(OcrEngine):
         y1 = min(img_h, y1)
         return ([x0, y0, x1, y1], rotation)
 
-    def _strict_parse_hierarchical(self, binary_data, img_w, img_h):
+    def _strict_parse_hierarchical(self, binary_data, orig_w, orig_h, upload_w=None, upload_h=None):
         paragraphs = []
         root = MiniProto(binary_data).parse()
         if 2 not in root: return []
@@ -505,7 +530,7 @@ class ChromeLensEngine(OcrEngine):
             if 3 in para:
                 geo = MiniProto(para[3][0]).parse()
                 if 1 in geo:
-                    bbox, rot = self._parse_geometry(geo[1][0], img_w, img_h)
+                    bbox, rot = self._parse_geometry(geo[1][0], orig_w, orig_h, upload_w, upload_h)
                     para_struct['bbox'] = bbox
                     para_struct['rotation'] = rot
             if 2 not in para: continue
@@ -516,7 +541,7 @@ class ChromeLensEngine(OcrEngine):
                 if 2 in line:
                     geo = MiniProto(line[2][0]).parse()
                     if 1 in geo:
-                        bbox, rot = self._parse_geometry(geo[1][0], img_w, img_h)
+                        bbox, rot = self._parse_geometry(geo[1][0], orig_w, orig_h, upload_w, upload_h)
                         line_struct['bbox'] = bbox
                         line_struct['rotation'] = rot
                 if 1 not in line: continue
@@ -540,7 +565,7 @@ class ChromeLensEngine(OcrEngine):
                     if 4 in word:
                         geo = MiniProto(word[4][0]).parse()
                         if 1 in geo:
-                            word_bbox, _ = self._parse_geometry(geo[1][0], img_w, img_h)
+                            word_bbox, _ = self._parse_geometry(geo[1][0], orig_w, orig_h, upload_w, upload_h)
                     
                     # --- Relaxed Parsing: Inherit bbox if missing ---
                     if word_bbox is None:
@@ -642,9 +667,20 @@ class ChromeLensEngine(OcrEngine):
         # Format DPI for scan_res with safety fallback
         if not dpi:
             dpi = (300, 300)
-        
-        dpi_x = int(dpi[0]) if isinstance(dpi, (tuple, list)) and dpi[0] else 300
-        dpi_y = int(dpi[1]) if isinstance(dpi, (tuple, list)) and len(dpi) > 1 and dpi[1] else dpi_x
+
+        def _safe_scan_res(value, fallback):
+            try:
+                val = float(value)
+            except (TypeError, ValueError):
+                val = fallback
+            if not math.isfinite(val) or val <= 0:
+                val = fallback
+            return max(1, int(round(val)))
+
+        dpi_x_raw = dpi[0] if isinstance(dpi, (tuple, list)) and len(dpi) > 0 else 300
+        dpi_x = _safe_scan_res(dpi_x_raw, 300.0)
+        dpi_y_raw = dpi[1] if isinstance(dpi, (tuple, list)) and len(dpi) > 1 else dpi_x
+        dpi_y = _safe_scan_res(dpi_y_raw, float(dpi_x))
 
         page_div = ET.SubElement(body, "div", {
             "class": "ocr_page", 
@@ -687,7 +723,7 @@ class ChromeLensEngine(OcrEngine):
     def generate_pdf(self, input_file: Path, output_pdf: Path, hocr_file: Path, recalculate_coords: bool = False, options=None):
         raise NotImplementedError()
 
-if ocrmypdf.__version__ >= "17.0.0":
+if _is_ocrmypdf_v17_or_newer():
     @hookimpl
     def get_ocr_engine(options):
         if options is not None:
