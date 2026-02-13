@@ -10,17 +10,6 @@ A plugin for [OCRmyPDF](https://github.com/ocrmypdf/OCRmyPDF) that uses the **Go
 
 ***
 
-## ⚠️ Compatibility Warning
-
-**This plugin is not currently compatible with OCRmyPDF v17 or higher.**
-
-OCRmyPDF v17 introduced breaking changes to the plugin interface (migrating from `argparse.Namespace` to `OcrOptions` objects). Please use an older version of OCRmyPDF (v16.x or lower) until this plugin is updated.
-
-To install a compatible version:
-```bash
-pip install "ocrmypdf<17"
-```
-
 ## Installation
 
 ### Prerequisites

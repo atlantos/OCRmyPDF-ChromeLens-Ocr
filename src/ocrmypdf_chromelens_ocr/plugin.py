@@ -3,10 +3,8 @@ import logging
 import math
 import random
 import re
-import string
 import struct
 import time
-import uuid
 import unicodedata
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -15,7 +13,9 @@ import requests
 from PIL import Image
 
 # ocrmypdf imports
+import ocrmypdf
 from ocrmypdf import OcrEngine, hookimpl
+from ocrmypdf._exec import tesseract
 
 class OcrEngineError(Exception):
     pass
@@ -183,15 +183,24 @@ class ChromeLensEngine(OcrEngine):
         return {"eng", "auto"}
 
     def get_orientation(self, input_file: Path, options):
-        return {'angle': 0, 'confidence': 1.0}
+        return tesseract.get_orientation(
+            input_file,
+            engine_mode=options.tesseract_oem,
+            timeout=options.tesseract_non_ocr_timeout,
+        )
+
+    def get_deskew(self, input_file: Path, options) -> float:
+        return 0.0
 
     def generate_hocr(self, input_file: Path, output_hocr: Path, output_text: Path = None, options=None):
         img_bytes = None
         width, height = 0, 0
+        dpi = (300, 300)
 
         try:
             with Image.open(input_file) as img:
                 width, height = img.size
+                dpi = img.info.get('dpi', (300, 300))
                 MAX_DIMENSION = 4800
                 process_img = img
 
@@ -237,7 +246,7 @@ class ChromeLensEngine(OcrEngine):
         except Exception as e:
             raise OcrEngineError(f"Google Lens logic failed: {e}")
 
-        self._write_output_hierarchical(layout_structure, width, height, input_file, output_hocr, output_text)
+        self._write_output_hierarchical(layout_structure, width, height, dpi, input_file, output_hocr, output_text)
 
     def _sort_lines_by_rotation(self, paragraphs):
         for para in paragraphs:
@@ -545,14 +554,26 @@ class ChromeLensEngine(OcrEngine):
                 paragraphs.append(para_struct)
         return paragraphs
 
-    def _write_output_hierarchical(self, paragraphs, img_w, img_h, input_file, output_hocr, output_text):
+    def _write_output_hierarchical(self, paragraphs, img_w, img_h, dpi, input_file, output_hocr, output_text):
         html = ET.Element("html", {"xmlns": "http://www.w3.org/1999/xhtml", "xml:lang": "und"})
         head = ET.SubElement(html, "head")
         safe_title = xml_sanitize(str(input_file))
         ET.SubElement(head, "title").text = safe_title
         ET.SubElement(head, "meta", {"name": "ocr-system", "content": "chrome-lens-pure-py"})
         body = ET.SubElement(html, "body")
-        page_div = ET.SubElement(body, "div", {"class": "ocr_page", "id": "page_1", "title": f"bbox 0 0 {img_w} {img_h}"})
+
+        # Format DPI for scan_res with safety fallback
+        if not dpi:
+            dpi = (300, 300)
+        
+        dpi_x = int(dpi[0]) if isinstance(dpi, (tuple, list)) and dpi[0] else 300
+        dpi_y = int(dpi[1]) if isinstance(dpi, (tuple, list)) and len(dpi) > 1 and dpi[1] else dpi_x
+
+        page_div = ET.SubElement(body, "div", {
+            "class": "ocr_page", 
+            "id": "page_1", 
+            "title": f"bbox 0 0 {img_w} {img_h}; ppageno 0; scan_res {dpi_x} {dpi_y}"
+        })
 
         full_text_lines = []
 
@@ -585,8 +606,18 @@ class ChromeLensEngine(OcrEngine):
                 f.write("\n".join(full_text_lines).strip())
 
     def generate_pdf(self, input_file: Path, output_pdf: Path, hocr_file: Path, recalculate_coords: bool = False, options=None):
-        pass
+        raise NotImplementedError()
 
-@hookimpl
-def get_ocr_engine():
-    return ChromeLensEngine()
+if ocrmypdf.__version__ >= "17.0.0":
+    @hookimpl
+    def get_ocr_engine(options):
+        if options is not None:
+            ocr_engine = getattr(options, "ocr_engine", "auto")
+            # If the user explicitly requested another engine, do not return this one
+            if ocr_engine not in ("auto", "chromelens"):
+                return None
+        return ChromeLensEngine()
+else:
+    @hookimpl
+    def get_ocr_engine():
+        return ChromeLensEngine()

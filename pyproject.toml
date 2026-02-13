@@ -23,7 +23,7 @@ classifiers = [
 keywords = ["ocrmypdf", "ocr", "google-lens", "pdf", "plugin"]
 requires-python = ">=3.9"
 dependencies = [
-    "ocrmypdf>=16.0.0,<17",
+    "ocrmypdf>=16.0.0",
     "requests",
     "Pillow",
 ]
@@ -32,5 +32,5 @@ dependencies = [
 "Homepage" = "https://github.com/atlantos/OCRmyPDF-ChromeLens-Ocr"
 "Bug Tracker" = "https://github.com/atlantos/OCRmyPDF-ChromeLens-Ocr/issues"
 
-[project.entry-points."ocrmypdf.plugins"]
+[project.entry-points."ocrmypdf"]
 chromelens = "ocrmypdf_chromelens_ocr"
