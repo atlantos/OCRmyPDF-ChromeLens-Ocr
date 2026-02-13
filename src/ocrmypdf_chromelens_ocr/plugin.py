@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 # ocrmypdf uses NFKC normalization which converts ¹ -> 1, ² -> 2, etc.
 # We patch it to use NFC (Canonical) which preserves these glyphs.
 _original_normalize = unicodedata.normalize
+_nfkc_patch_applied = False
 
 def _patched_normalize(form, unistr):
     if form == 'NFKC':
@@ -34,8 +35,12 @@ def _patched_normalize(form, unistr):
         return _original_normalize('NFC', unistr)
     return _original_normalize(form, unistr)
 
-# Apply patch globally
-unicodedata.normalize = _patched_normalize
+def _apply_nfkc_patch():
+    global _nfkc_patch_applied
+    if _nfkc_patch_applied:
+        return
+    unicodedata.normalize = _patched_normalize
+    _nfkc_patch_applied = True
 
 # --- Constants ---
 LENS_PROTO_ENDPOINT = 'https://lensfrontend-pa.googleapis.com/v1/crupload'
@@ -690,8 +695,10 @@ if ocrmypdf.__version__ >= "17.0.0":
             # If the user explicitly requested another engine, do not return this one
             if ocr_engine not in ("auto", "chromelens"):
                 return None
+        _apply_nfkc_patch()
         return ChromeLensEngine()
 else:
     @hookimpl
     def get_ocr_engine():
+        _apply_nfkc_patch()
         return ChromeLensEngine()
