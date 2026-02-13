@@ -312,10 +312,14 @@ class ChromeLensEngine(OcrEngine):
                 
                 if len(prefix) > len(suffix):
                     last_word['text'] = full_word
+                    # Preserve separator that belongs to the suffix token.
+                    last_word['sep'] = first_next_word.get('sep')
                     first_next_word['text'] = ""
+                    first_next_word['sep'] = None
                 else:
                     first_next_word['text'] = full_word
                     last_word['text'] = ""
+                    last_word['sep'] = None
                     
         return paragraphs
 
@@ -425,12 +429,38 @@ class ChromeLensEngine(OcrEngine):
         w  = box.get(3, [0.0])[0]
         h  = box.get(4, [0.0])[0]
         rotation = box.get(5, [0.0])[0]
-        
-        px_cx = cx * img_w
-        px_cy = cy * img_h
-        px_w = w * img_w
-        px_h = h * img_h
+        coordinate_type = box.get(6, [1])[0]
 
+        # Geometry may be normalized (0..1) or absolute image coordinates.
+        if coordinate_type == 2:  # IMAGE
+            px_cx = cx
+            px_cy = cy
+            px_w = w
+            px_h = h
+        elif coordinate_type == 1:  # NORMALIZED
+            px_cx = cx * img_w
+            px_cy = cy * img_h
+            px_w = w * img_w
+            px_h = h * img_h
+        else:
+            # Unknown/unspecified type: infer from value ranges.
+            looks_normalized = (
+                0.0 <= cx <= 1.0 and
+                0.0 <= cy <= 1.0 and
+                0.0 <= w <= 1.5 and
+                0.0 <= h <= 1.5
+            )
+            if looks_normalized:
+                px_cx = cx * img_w
+                px_cy = cy * img_h
+                px_w = w * img_w
+                px_h = h * img_h
+            else:
+                px_cx = cx
+                px_cy = cy
+                px_w = w
+                px_h = h
+        
         if abs(rotation) > 0.1:
             cos_r = abs(math.cos(rotation))
             sin_r = abs(math.sin(rotation))
@@ -494,6 +524,13 @@ class ChromeLensEngine(OcrEngine):
                     except: continue
                     text_val = xml_sanitize(text_val)
                     if not text_val.strip(): continue
+                    sep_val = None
+                    if 3 in word:
+                        try:
+                            sep_val = word[3][0].decode('utf-8')
+                            sep_val = xml_sanitize(sep_val)
+                        except:
+                            sep_val = None
                     word_bbox = None
                     if 4 in word:
                         geo = MiniProto(word[4][0]).parse()
@@ -538,14 +575,16 @@ class ChromeLensEngine(OcrEngine):
                         
                         # Add Base
                         bbox_base = [x0, y0, split_x, y1]
-                        line_struct['words'].append({'text': base_text, 'bbox': bbox_base})
+                        # Empty separator prevents fallback space insertion between
+                        # base and superscript suffix.
+                        line_struct['words'].append({'text': base_text, 'bbox': bbox_base, 'sep': ''})
                         
                         # Add Suffix (The superscript part)
                         bbox_suff = [split_x, y0, x1, y1]
-                        line_struct['words'].append({'text': suffix_text, 'bbox': bbox_suff})
+                        line_struct['words'].append({'text': suffix_text, 'bbox': bbox_suff, 'sep': sep_val})
                     else:
                         # No superscript suffix found, or the whole word is superscripts (leave as is)
-                        line_struct['words'].append({'text': text_val, 'bbox': word_bbox})
+                        line_struct['words'].append({'text': text_val, 'bbox': word_bbox, 'sep': sep_val})
                 
                 if not line_struct['bbox'] and line_struct['words']:
                     line_struct['bbox'] = union_bboxes([w['bbox'] for w in line_struct['words']])
@@ -570,6 +609,22 @@ class ChromeLensEngine(OcrEngine):
         if abs(degrees) < 0.1:
             return title
         return f"{title}; textangle {degrees:.2f}"
+
+    @staticmethod
+    def _line_plain_text(words):
+        visible_words = [w for w in words if w.get('text')]
+        if not visible_words:
+            return ""
+
+        parts = []
+        for idx, word in enumerate(visible_words):
+            parts.append(word.get('text', ''))
+            sep = word.get('sep')
+            if sep is not None:
+                parts.append(sep)
+            elif idx < len(visible_words) - 1:
+                parts.append(' ')
+        return "".join(parts).rstrip()
 
     def _write_output_hierarchical(self, paragraphs, img_w, img_h, dpi, input_file, output_hocr, output_text):
         html = ET.Element("html", {"xmlns": "http://www.w3.org/1999/xhtml", "xml:lang": "und"})
@@ -600,15 +655,17 @@ class ChromeLensEngine(OcrEngine):
 
             for j, line in enumerate(para['lines']):
                 line_span = ET.SubElement(par_p, "span", {"class": "ocr_line", "id": f"line_{i+1}_{j+1}", "title": self._line_title(line)})
-                line_text = []
                 for k, word in enumerate(line['words']):
                     if not word['text']: continue
                     word_span = ET.SubElement(line_span, "span", {"class": "ocrx_word", "id": f"word_{i+1}_{j+1}_{k+1}", "title": bbox_str(word['bbox'])})
-                    word_span.text = word['text']
-                    line_text.append(word['text'])
+                    sep = word.get('sep') or ""
+                    # Preserve punctuation separators in hOCR word text.
+                    word_sep_text = sep.strip()
+                    word_span.text = f"{word['text']}{word_sep_text}" if word_sep_text else word['text']
                 
+                line_text = self._line_plain_text(line['words'])
                 if line_text:
-                    full_text_lines.append(" ".join(line_text))
+                    full_text_lines.append(line_text)
             
             full_text_lines.append("")
 
