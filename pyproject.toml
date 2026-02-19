@@ -28,6 +28,12 @@ dependencies = [
     "Pillow",
 ]
 
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "pytest-cov",
+]
+
 [project.urls]
 "Homepage" = "https://github.com/atlantos/OCRmyPDF-ChromeLens-Ocr"
 "Bug Tracker" = "https://github.com/atlantos/OCRmyPDF-ChromeLens-Ocr/issues"
