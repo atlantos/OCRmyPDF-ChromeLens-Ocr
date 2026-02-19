@@ -1,6 +1,10 @@
 name: Live Smoke OCR
 
 on:
+  push:
+    branches:
+      - testing
+      - main
   workflow_dispatch:
 
 permissions:
