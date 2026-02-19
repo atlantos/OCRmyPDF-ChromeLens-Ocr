@@ -167,7 +167,7 @@ def test_add_options_and_engine_metadata(plugin, monkeypatch):
     assert args.chromelens_dump_debug is True
 
     engine = plugin.ChromeLensEngine()
-    assert plugin.ChromeLensEngine.version() == "1.0.4"
+    assert plugin.ChromeLensEngine.version() == "1.0.5"
     assert plugin.ChromeLensEngine.creator_tag().startswith("OCRmyPDF-ChromeLens-Ocr ")
     assert str(engine) == "ChromeLensOcr"
     assert engine.engine_name() == "ChromeLensOcr"
