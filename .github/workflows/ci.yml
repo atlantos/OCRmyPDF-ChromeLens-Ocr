@@ -41,7 +41,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        ocrmypdf-version: ["16.13.0", "17.2.0"]
+        ocrmypdf-version: ["16.13.0", "17.3.0"]
 
     steps:
       - name: Checkout
